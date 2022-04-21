@@ -8,13 +8,12 @@ import glob
 def load_st3d_data(baseDir='/home/jessie/datasets/st3d_rgbdxyz/nerf/03007_834036', stage=0):
 
     basename = baseDir.split('/')[-1]+'_'
-    rgb = np.asarray(Image.open(os.path.join(baseDir, basename+'rgb.png'))) / 255.0
+    rgb = np.asarray(Image.open(os.path.join(baseDir, basename+'rgb.png')).convert('RGB')) / 255.0
     
     if baseDir.split('/')[-2] == 'mp3d':
         print(os.path.join(baseDir, basename+'depth.exr'))
         d = cv2.imread(os.path.join(baseDir, basename+'depth.exr'), cv2.IMREAD_ANYDEPTH)
         d = d.astype(np.float)
-
     else:
         d = np.asarray(Image.open(os.path.join(baseDir, basename+'d.png')))
     gradient = cv2.Laplacian(rgb, cv2.CV_64F)
@@ -88,7 +87,7 @@ def load_st3d_data(baseDir='/home/jessie/datasets/st3d_rgbdxyz/nerf/03007_834036
             elif i < 110:
                 rays_o_test.append(np.repeat(p.reshape(1, -1), H*W, axis=0))
                 rays_d_test.append(original_coord.reshape(-1, 3))
-                rays_rgb_test.append(np.asarray(Image.open(os.path.join(baseDir, 'test', 'rgb_{}.png'.format(i-100)))).reshape(-1 ,3))
+                rays_rgb_test.append(np.asarray(Image.open(os.path.join(baseDir, 'test', 'rgb_{}.png'.format(i-100))).convert('RGB')).reshape(-1 ,3))
                 rays_depth_test.append(dep.reshape(-1))
 
             elif i == 110:
