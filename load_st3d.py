@@ -34,6 +34,7 @@ def load_st3d_data(baseDir='/home/jessie/datasets/st3d_rgbdxyz/nerf/03007_834036
     axis1 = np.sin(_theta).reshape(H, W, 1)
     axis2 = (-np.cos(_theta)*np.sin(_phi)).reshape(H, W, 1)
     original_coord = np.concatenate((axis0, axis1, axis2), axis=2)
+    # *c2w here
     coord = original_coord * d
     
     # load training camera poses
