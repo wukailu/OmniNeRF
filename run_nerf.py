@@ -1,21 +1,11 @@
-import os, sys
-import numpy as np
-import imageio
-import json
-import random
+import os
 import time
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-# from torch.utils.tensorboard import SummaryWriter
+
+import imageio
 from tqdm import tqdm, trange
 
-import matplotlib.pyplot as plt
-
-from run_nerf_helpers import *
-
 from load_st3d import load_st3d_data
-# from load_multiple_mp3d import load_multi_mp3d_data
+from run_nerf_helpers import *
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
