@@ -204,9 +204,30 @@ def batchify(fn, chunk=1024 * 32):
     return ret
 
 
-def run_network(inputs, viewdirs, fn, embed_fn, embeddirs_fn, netchunk=1024 * 64):
-    """Prepares inputs and applies network 'fn'.
+def to_camera_frame(pts):
     """
+    pts: tensor in shape of [points, 3]
+    """
+    w2c = torch.tensor([
+        [0.33813756704330444, -0.9410862326622009, 0.004434713162481785, -5.711871147155762],
+        [0.006247888319194317, -0.0024673265870660543, -0.9999774098396301, 1.36056649684906],
+        [0.9410759210586548, 0.33815765380859375, 0.005045505706220865, -2.4272472858428955],
+        [0, 0, 0, 1],
+    ])
+    return (w2c @ torch.cat([pts, torch.ones_like(pts)[..., :1]], dim=-1).T)[..., :3]
+
+
+def run_network(inputs, viewdirs, fn, embed_fn, embeddirs_fn, netchunk=1024 * 64):
+    """
+    Prepares inputs and applies network 'fn'.
+    inputs: tensor in shape of [N_rays, N_sample_points, 3]
+    viewdirs: tensor in shape of [N_rays, 3]
+    """
+    import torch.nn.functional as F
+    assert (viewdirs == F.normalize(inputs[:,1] - inputs[:,0], p=2, dim=-1)).all()
+    inputs = to_camera_frame(inputs)
+    viewdirs = F.normalize(inputs[:, 1] - inputs[:, 0], p=2, dim=-1)
+
     inputs_flat = torch.reshape(inputs, [-1, inputs.shape[-1]])
     embedded = embed_fn(inputs_flat)
 
