@@ -1,7 +1,7 @@
 # filtered out fake visible pixels
-expname = area2
+expname = area3
 basedir = ./logs
-datadir = ./data/area2
+datadir = ./data/area3
 dataset_type = st3d
 
 N_rand = 1400
