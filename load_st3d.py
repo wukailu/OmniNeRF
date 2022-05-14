@@ -43,7 +43,8 @@ def load_st3d_data(baseDir='/home/jessie/datasets/st3d_rgbdxyz/nerf/03007_834036
         all_poses = fp.readlines()
         for p in all_poses:
             cam_origin.append(np.array(p.split()).astype(float))
-    
+    num_train = len(cam_origin)
+
     # load testing camera poses
     with open(os.path.join(baseDir, 'test', 'cam_pos.txt'),'r') as fp:
         all_poses = fp.readlines()
@@ -74,7 +75,7 @@ def load_st3d_data(baseDir='/home/jessie/datasets/st3d_rgbdxyz/nerf/03007_834036
         for i, p in enumerate(cam_origin):
             dep = np.linalg.norm(coord - p, axis=-1)
 
-            if i<100:
+            if i<num_train:
                 dir = coord - p # direction = end point - start point
                 dir = dir / np.linalg.norm(dir, axis=-1)[..., None]
                 mask = np.asarray(Image.open(os.path.join(baseDir, 'rm_occluded', 'mask_%d.png' % i))).copy() / 255
@@ -85,13 +86,13 @@ def load_st3d_data(baseDir='/home/jessie/datasets/st3d_rgbdxyz/nerf/03007_834036
                 rays_rgb.append(rgb[mask>0])
                 rays_depth.append(dep[mask>0])
 
-            elif i < 110:
+            elif i < num_train+10:
                 rays_o_test.append(np.repeat(p.reshape(1, -1), H*W, axis=0))
                 rays_d_test.append(original_coord.reshape(-1, 3))
-                rays_rgb_test.append(np.asarray(Image.open(os.path.join(baseDir, 'test', 'rgb_{}.png'.format(i-100))).convert('RGB')).reshape(-1 ,3))
+                rays_rgb_test.append(np.asarray(Image.open(os.path.join(baseDir, 'test', 'rgb_{}.png'.format(i-num_train))).convert('RGB')).reshape(-1 ,3))
                 rays_depth_test.append(dep.reshape(-1))
 
-            elif i == 110:
+            elif i == num_train+10:
                 rays_o_test.append(np.repeat(p.reshape(1, -1), H*W, axis=0))
                 rays_d_test.append(coord.reshape(-1, 3))
                 rays_rgb_test.append(rgb.reshape(-1, 3))
@@ -105,6 +106,6 @@ def load_st3d_data(baseDir='/home/jessie/datasets/st3d_rgbdxyz/nerf/03007_834036
     rays_depth, rays_depth_test = np.concatenate(rays_depth, axis=0), np.concatenate(rays_depth_test, axis=0)
     
     # rays_o, rays_d, rays_g, rays_rgb, rays_depth, [H, W]
-    # all in flatten format : [N(~H*W*100), 3 or 1]
+    # all in flatten format : [N(~H*W*num_train), 3 or 1]
     return [rays_o, rays_o_test], [rays_d, rays_d_test], rays_g, [rays_rgb, rays_rgb_test], [rays_depth, rays_depth_test], [int(H), int(W)]
 
