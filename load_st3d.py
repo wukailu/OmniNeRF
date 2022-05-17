@@ -78,13 +78,18 @@ def load_st3d_data(baseDir='/home/jessie/datasets/st3d_rgbdxyz/nerf/03007_834036
             if i<num_train:
                 dir = coord - p # direction = end point - start point
                 dir = dir / np.linalg.norm(dir, axis=-1)[..., None]
-                mask = np.asarray(Image.open(os.path.join(baseDir, 'rm_occluded', 'mask_%d.png' % i))).copy() / 255
-
-                rays_o.append(np.repeat(p.reshape(1, -1), (mask>0).sum(), axis=0))
-                rays_g.append(gradient[mask>0])
-                rays_d.append(dir[mask>0])
-                rays_rgb.append(rgb[mask>0])
-                rays_depth.append(dep[mask>0])
+                rays_o.append(np.repeat(p.reshape(1, -1), H * W, axis=0))
+                rays_g.append(gradient.reshape(-1, 3))
+                rays_d.append(dir.reshape(-1, 3))
+                rays_rgb.append(rgb.reshape(-1, 3))
+                rays_depth.append(dep.reshape(-1))
+                # mask = np.asarray(Image.open(os.path.join(baseDir, 'rm_occluded', 'mask_%d.png' % i))).copy() / 255
+                #
+                # rays_o.append(np.repeat(p.reshape(1, -1), (mask>0).sum(), axis=0))
+                # rays_g.append(gradient[mask>0])
+                # rays_d.append(dir[mask>0])
+                # rays_rgb.append(rgb[mask>0])
+                # rays_depth.append(dep[mask>0])
 
             elif i < num_train+10:
                 rays_o_test.append(np.repeat(p.reshape(1, -1), H*W, axis=0))

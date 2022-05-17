@@ -80,6 +80,7 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0):
 
     dists = z_vals[..., 1:] - z_vals[..., :-1]
     dists = torch.cat([dists, torch.Tensor([1e10]).expand(dists[..., :1].shape)], -1)  # [N_rays, N_samples]
+    # dists = torch.cat([dists, torch.Tensor([1]).expand(dists[..., :1].shape)], -1)  # [N_rays, N_samples]
 
     dists = dists * torch.norm(rays_d[..., None, :], dim=-1)
 
@@ -117,10 +118,9 @@ def render_path(rays, hw, render_kwargs, savedir=None, render_factor=0):
     for i in tqdm(range(rays_o.shape[0] // batch)):
         print(i, time.time() - t)
         t = time.time()
-        rgb, dep, grad, alpha, _ = render(H, W, rays=[rays_o[i * batch:(i + 1) * batch], rays_d[i * batch:(i + 1) * batch]],
-                                                    **render_kwargs)
-        if i == 0:
-            print(rgb.shape, dep.shape)
+        rgb, dep, _, _, _, _ = render(H, W,
+                                            rays=[rays_o[i * batch:(i + 1) * batch], rays_d[i * batch:(i + 1) * batch]],
+                                            pts_noise=0, **render_kwargs)
 
         if savedir is not None:
             rgb8 = rgb.reshape(H, W, 3).cpu().numpy()
@@ -150,7 +150,7 @@ def render_rays(ray_batch,
                 network_fine=None,
                 raw_noise_std=0.,
                 use_viewdirs=True,
-                sigma_loss=None):
+                pts_noise=0.0001):
     """Volumetric rendering.
     Args:
       ray_batch: array of shape [batch_size, ...]. All information necessary
@@ -202,8 +202,13 @@ def render_rays(ray_batch,
 
     rgb_map, depth_map, grad_map, weights, alpha = raw2outputs(raw, z_vals, rays_d, raw_noise_std)
 
+    ret = {}
     if N_importance > 0:
-        rgb_map_0, depth_map_0, grad_map_0 = rgb_map, depth_map, grad_map
+        ret['rgb0'] = rgb_map
+        ret['depth0'] = depth_map
+        ret['grad0'] = grad_map
+        ret['weights0'] = weights
+        ret['z_vals0'] = z_vals
 
         z_vals_mid = .5 * (z_vals[..., 1:] + z_vals[..., :-1])
         z_samples = sample_pdf(z_vals_mid, weights[..., 1:-1], N_importance, det=True, pytest=False)
@@ -214,17 +219,12 @@ def render_rays(ray_batch,
                                                             None]  # [N_rays, N_samples + N_importance, 3]
 
         run_fn = network_fn if network_fine is None else network_fine
-        raw = network_query_fn(pts, viewdirs, run_fn)
+        raw = network_query_fn(pts + torch.randn_like(pts) * pts_noise, viewdirs, run_fn)
+        # raw = network_query_fn(pts, viewdirs, run_fn)
 
         rgb_map, depth_map, grad_map, weights, alpha = raw2outputs(raw, z_vals, rays_d, raw_noise_std)
 
-    ret = {'rgb_map': rgb_map, 'depth_map': depth_map, 'grad_map': grad_map, "alpha": alpha}
-
-    if N_importance > 0:
-        ret['rgb0'] = rgb_map_0
-        ret['depth0'] = depth_map_0
-        ret['grad0'] = grad_map_0
-        ret['z_std'] = torch.std(z_samples, dim=-1, unbiased=False)  # [N_rays]
+    ret.update({'rgb_map': rgb_map, 'depth_map': depth_map, 'grad_map': grad_map, "weights": weights, "z_vals": z_vals})
 
     for k in ret:
         if DEBUG and ret[k] and (torch.isnan(ret[k]).any() or torch.isinf(ret[k]).any()):
@@ -241,7 +241,6 @@ def render(H, W, rays, near=0.0, far=2.0, far_replace=None, use_viewdirs=True, *
     else:
         far = far_replace.reshape(rays_d[..., :1].shape).to(rays_d)
 
-
     rays = torch.cat([rays_o, rays_d, near, far], -1)
 
     # Render and reshape
@@ -252,7 +251,7 @@ def render(H, W, rays, near=0.0, far=2.0, far_replace=None, use_viewdirs=True, *
         k_sh = list(sh[:-1]) + list(all_ret[k].shape[1:])
         all_ret[k] = torch.reshape(all_ret[k], k_sh)
 
-    k_extract = ['rgb_map', 'depth_map', 'grad_map', 'alpha']
+    k_extract = ['rgb_map', 'depth_map', 'grad_map', 'weights', 'z_vals']
     ret_list = [all_ret[k] for k in k_extract]
     ret_dict = {k: all_ret[k] for k in all_ret if k not in k_extract}
     return ret_list + [ret_dict]
@@ -423,6 +422,8 @@ def config_parser():
                         help='use depth to update')
     parser.add_argument("--use_dist", action='store_true',
                         help='use distribution loss to update')
+    parser.add_argument("--use_indoor", action='store_true',
+                        help='penalty passing through rays to update')
     parser.add_argument("--use_gradient", action='store_true',
                         help='use gradient to update')
     parser.add_argument("--stage", type=int, default=0,
@@ -483,6 +484,8 @@ def train():
     # Create nerf model
     render_kwargs_train, render_kwargs_test, start, grad_vars, optimizer = create_nerf(args)
     global_step = start
+    # scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=(0.1 ** (1 / (args.lrate_decay * 1000))))
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=args.lrate, total_steps=args.i_testset + 5)
 
     bds_dict = {
         'near': near,
@@ -506,8 +509,8 @@ def train():
             rays_o_test = torch.Tensor(rays_o_test).to(device)
             rays_d_test = torch.Tensor(rays_d_test).to(device)
 
-            rgbs, _ = render_path([rays_o_test, rays_d_test], hw, render_kwargs_test, savedir=testsavedir,
-                                  render_factor=args.render_factor)
+            rgbs, depth = render_path([rays_o_test, rays_d_test], hw, render_kwargs_test, savedir=testsavedir,
+                                      render_factor=args.render_factor)
             print('Done rendering', testsavedir)
 
             # calculate MSE and PSNR for last image(gt pose)
@@ -547,7 +550,7 @@ def train():
     N_rand = args.N_rand
     i_batch = 0
     # N_iters = 200000 + 1
-    N_iters = args.i_weights + 1
+    N_iters = 50000 + 1
     start = start + 1
     print('Begin, iter: %d' % start)
     for i in trange(start, N_iters):
@@ -575,65 +578,85 @@ def train():
 
         #####  Core optimization loop  #####
 
-        rgb, dep, grad, alpha, extras = render(H, W, rays=[batch_o, batch_d], **render_kwargs_train)
+        rgb, dep, grad, weights, z_vals, extras = render(H, W, rays=[batch_o, batch_d], pts_noise=0*(1-i/N_iters), **render_kwargs_train)
 
         optimizer.zero_grad()
         # import pdb; pdb.set_trace()
         img_loss = img2mse(rgb, target_rgb)
 
-        # distribution loss
-        if args.use_dist:
-            rgb, dep, grad, alpha, extras = render(H, W, rays=[batch_o, batch_d], far_replace=target_depth, **render_kwargs_train)
-            dist_loss = (-torch.exp(alpha[:, -1]) / (torch.sum(torch.exp(alpha), dim=1) + 1)).mean()
-            if i % 50 == 1:
-                print("weight example: ", alpha[0].detach())
-        else:
-            dist_loss = torch.tensor(0.0)
+        if i % 100 == 1:
+            print("weights common example: ", weights[0][:20].detach())
 
         # depth_loss
         if args.use_depth:
-            # print("dep: max ", dep.max(), "min ", dep.min(), "avg ", dep.mean())
-            # print("target_depth: max ", target_depth.max(), "min ", target_depth.min(), "avg ", target_depth.mean())
             depth_loss = img2mse(dep, target_depth)
         else:
             depth_loss = torch.tensor(0.0)
+
+        # distribution loss
+        if args.use_dist:
+            dist_loss = weights[z_vals < target_depth[:, None]*0.99].mean()
+            if i % 100 == 1:
+                print("weights example: ", weights[0][-30:].detach())
+        else:
+            dist_loss = torch.tensor(0.0)
+
+        if args.use_indoor:
+            indoor_loss = -torch.log(1-weights.sum(dim=-1) + 1e-6).mean() * 0.01
+        else:
+            indoor_loss = torch.tensor(0.0)
 
         if args.use_gradient:
             grad_loss = img2mse(grad, target_g)
         else:
             grad_loss = torch.tensor(0.0)
 
-        loss = img_loss + depth_loss + grad_loss + dist_loss
-        if i % 50 == 1:
-            print("img_loss:", img_loss.detach(), "depth_loss: ", depth_loss.detach(), "grad_loss ", grad_loss.detach(), "dist_loss ", dist_loss.detach())
+        loss = img_loss + depth_loss + grad_loss + dist_loss + indoor_loss
+        if i % 100 == 1:
+            print("img_loss:", img_loss.detach(), "depth_loss: ", depth_loss.detach(), "dist_loss ", dist_loss.detach(),
+                  "indoor_loss: ", indoor_loss.detach())
         psnr = mse2psnr(img_loss)
 
+        # loss for coarse network
         if 'rgb0' in extras:
+            if i % 100 == 1:
+                print("has rgb0!")
             img_loss0 = img2mse(extras['rgb0'], target_rgb)
             loss = loss + img_loss0
+            info = "img_loss0:" + str(img_loss0.detach())
+            # depth_loss
             if args.use_depth:
-                depth_loss0 = torch.abs(extras['depth0'] - target_depth).mean()
+                depth_loss0 = img2mse(extras['depth0'], target_depth)
                 loss = loss + depth_loss0
+                info += "depth_loss0: " + str(depth_loss0.detach())
+            if args.use_dist:
+                dist_loss0 = extras['weights0'][extras['z_vals0'] < target_depth[:, None]*0.99].mean()
+                loss = loss + dist_loss0
+                info += "dist_loss0: " + str(dist_loss0.detach())
+            if args.use_indoor:
+                indoor_loss0 = -torch.log(1 - extras['weights0'].sum(dim=-1) + 1e-6).mean() * 0.01
+                loss = loss + indoor_loss0
+                info += "indoor_loss0: " + str(indoor_loss0.detach())
             if args.use_gradient:
                 grad_loss0 = img2mse(extras['grad0'], target_g)
                 loss = loss + grad_loss0
-
             psnr0 = mse2psnr(img_loss0)
+            if i % 100 == 1:
+                print(info)
 
         loss.backward()
         optimizer.step()
 
         # NOTE: IMPORTANT!
         ###   update learning rate   ###
-        decay_rate = 0.1
-        decay_steps = args.lrate_decay * 1000
-        new_lrate = args.lrate * (decay_rate ** (global_step / decay_steps))
-        for param_group in optimizer.param_groups:
-            param_group['lr'] = new_lrate
+        # decay_rate = 0.1
+        # decay_steps = args.lrate_decay * 1000
+        # new_lrate = args.lrate * (decay_rate ** (global_step / decay_steps))
+        # for param_group in optimizer.param_groups:
+        #     param_group['lr'] = new_lrate
+        scheduler.step()
         ################################
 
-        dt = time.time() - time0
-        # print(f"Step: {global_step}, Loss: {loss}, Time: {dt}")
         #####           end            #####
 
         # Rest is logging
@@ -655,8 +678,8 @@ def train():
             os.makedirs(testsavedir, exist_ok=True)
 
             with torch.no_grad():
-                rgbs, _ = render_path([rays_o_test, rays_d_test], hw, render_kwargs_test, savedir=testsavedir,
-                                      render_factor=args.render_factor)
+                rgbs, deps = render_path([rays_o_test, rays_d_test], hw, render_kwargs_test, savedir=testsavedir,
+                                         render_factor=args.render_factor)
             print('Done rendering', testsavedir)
 
             # calculate MSE and PSNR for last image(gt pose)
