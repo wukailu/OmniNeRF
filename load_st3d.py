@@ -39,11 +39,11 @@ def load_st3d_data(baseDir='/home/jessie/datasets/st3d_rgbdxyz/nerf/03007_834036
     
     # load training camera poses
     cam_origin = []
-    with open(os.path.join(baseDir, 'cam_pos.txt'),'r') as fp:
-        all_poses = fp.readlines()
-        for p in all_poses:
-            cam_origin.append(np.array(p.split()).astype(float))
-    num_train = len(cam_origin)
+    # with open(os.path.join(baseDir, 'cam_pos.txt'),'r') as fp:
+    #     all_poses = fp.readlines()
+    #     for p in all_poses:
+    #         cam_origin.append(np.array(p.split()).astype(float))
+    num_train = 1
 
     # load testing camera poses
     with open(os.path.join(baseDir, 'test', 'cam_pos.txt'),'r') as fp:

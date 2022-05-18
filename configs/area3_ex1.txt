@@ -1,5 +1,5 @@
 # filtered out fake visible pixels
-expname = depth_1depth_long_OneCycleLR
+expname = depth
 basedir = ./logs
 datadir = ./data/0ccf3c78ef3549
 dataset_type = st3d

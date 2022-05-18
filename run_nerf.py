@@ -484,8 +484,8 @@ def train():
     # Create nerf model
     render_kwargs_train, render_kwargs_test, start, grad_vars, optimizer = create_nerf(args)
     global_step = start
-    # scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=(0.1 ** (1 / (args.lrate_decay * 1000))))
-    scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=args.lrate, total_steps=args.i_testset + 5)
+    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=(0.1 ** (1 / (args.lrate_decay * 1000))))
+    # scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=args.lrate, total_steps=args.i_testset + 5)
 
     bds_dict = {
         'near': near,
@@ -550,7 +550,7 @@ def train():
     N_rand = args.N_rand
     i_batch = 0
     # N_iters = 200000 + 1
-    N_iters = 50000 + 1
+    N_iters = 30000 + 1
     start = start + 1
     print('Begin, iter: %d' % start)
     for i in trange(start, N_iters):
