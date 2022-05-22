@@ -7,10 +7,9 @@ from tqdm import tqdm, trange
 
 from load_st3d import load_st3d_data
 from run_nerf_helpers import *
+import utils.backend as backend
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-np.random.seed(0)
-DEBUG = False
 
 
 def batchify(fn, chunk=1024 * 32):
@@ -79,18 +78,18 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0):
     raw2alpha = lambda raw, dists, act_fn=F.relu: 1. - torch.exp(-activate_density(raw) * dists)
 
     dists = z_vals[..., 1:] - z_vals[..., :-1]
-    dists = torch.cat([dists, torch.Tensor([1e10]).expand(dists[..., :1].shape)], -1)  # [N_rays, N_samples]
-    # dists = torch.cat([dists, torch.Tensor([1]).expand(dists[..., :1].shape)], -1)  # [N_rays, N_samples]
+    dists = torch.cat([dists, torch.Tensor([1e10]).expand(dists[..., :1].shape).to(dists)], -1)  # [N_rays, N_samples]
 
     dists = dists * torch.norm(rays_d[..., None, :], dim=-1)
 
     rgb = torch.sigmoid(raw[..., :3])  # [N_rays, N_samples, 3]
     noise = 0.
     if raw_noise_std > 0.:
-        noise = torch.randn(raw[..., 3].shape) * raw_noise_std
+        noise = torch.randn_like(raw[..., 3]) * raw_noise_std
 
     alpha = raw2alpha(raw[..., 3] + noise, dists)  # [N_rays, N_samples]
-    weights = alpha * torch.cumprod(torch.cat([torch.ones((alpha.shape[0], 1)), 1. - alpha + 1e-10], -1), -1)[:, :-1]
+    weights = alpha * torch.cumprod(torch.cat([torch.ones((alpha.shape[0], 1)).to(alpha), 1. - alpha + 1e-10], -1), -1)[
+                      :, :-1]
 
     rgb_map = torch.sum(weights[..., None] * rgb, -2)  # [N_rays, 3]
     depth_map = torch.sum(weights * z_vals, -1)
@@ -103,40 +102,32 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0):
     return rgb_map, depth_map, grad_map, weights, alpha
 
 
+@torch.no_grad()
 def render_path(rays, hw, render_kwargs, savedir=None, render_factor=0):
     H, W = hw
     rays_o, rays_d = rays
     if render_factor != 0:
+        rays_o = rays_o.reshape(-1, H, W, 3)[:, ::render_factor, ::render_factor].reshape(-1, 3)
+        rays_d = rays_d.reshape(-1, H, W, 3)[:, ::render_factor, ::render_factor].reshape(-1, 3)
         # Render downsampled for speed
         H = H // render_factor
         W = W // render_factor
+        assert rays_o.shape[0] % (H*W) == 0
 
     rgbs, deps = [], []
     t = time.time()
     batch = H * W
 
+    print("render near, far = ", render_kwargs['near'], render_kwargs['far'])
     for i in tqdm(range(rays_o.shape[0] // batch)):
         print(i, time.time() - t)
         t = time.time()
-        rgb, dep, _, _, _, _ = render(H, W,
-                                            rays=[rays_o[i * batch:(i + 1) * batch], rays_d[i * batch:(i + 1) * batch]],
-                                            pts_noise=0, **render_kwargs)
-
-        if savedir is not None:
-            rgb8 = rgb.reshape(H, W, 3).cpu().numpy()
-            rgbs.append(rgb8)
-
-            filename = os.path.join(savedir, '{:03d}.png'.format(i))
-            imageio.imwrite(filename, to8b(rgb8))
-
-            dep8 = dep.reshape(H, W).cpu().numpy()
-            deps.append(dep8)
-            filename = os.path.join(savedir, 'd_{:03d}.png'.format(i))
-
-            imageio.imwrite(filename, to8b(dep8))
+        rgb, dep, _, _, _, _ = render(H, W, rays=[rays_o[i * batch:(i + 1) * batch], rays_d[i * batch:(i + 1) * batch]],
+                                      pts_noise=0, **render_kwargs)
+        rgb8 = rgb.reshape(H, W, 3).cpu().numpy()
+        rgbs.append(rgb8)
 
     rgbs = np.stack(rgbs, 0)
-    deps = np.stack(deps, 0)
 
     return rgbs, deps
 
@@ -184,9 +175,8 @@ def render_rays(ray_batch,
     else:
         viewdirs = None
 
-    t_vals = torch.linspace(0., 1., steps=N_samples)
-    z_vals = near * (1. - t_vals) + far * (t_vals)
-
+    t_vals = torch.linspace(0., 1., steps=N_samples).to(near)
+    z_vals = near * (1. - t_vals) + far * t_vals
     z_vals = z_vals.expand([N_rays, N_samples])
 
     # get intervals between samples
@@ -194,7 +184,7 @@ def render_rays(ray_batch,
     upper = torch.cat([mids, z_vals[..., -1:]], -1)
     lower = torch.cat([z_vals[..., :1], mids], -1)
     # stratified samples in those intervals
-    t_rand = torch.rand(z_vals.shape)
+    t_rand = torch.rand_like(z_vals)
     z_vals = lower + (upper - lower) * t_rand
 
     pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :, None]  # [N_rays, N_samples, 3]
@@ -225,10 +215,6 @@ def render_rays(ray_batch,
         rgb_map, depth_map, grad_map, weights, alpha = raw2outputs(raw, z_vals, rays_d, raw_noise_std)
 
     ret.update({'rgb_map': rgb_map, 'depth_map': depth_map, 'grad_map': grad_map, "weights": weights, "z_vals": z_vals})
-
-    for k in ret:
-        if DEBUG and ret[k] and (torch.isnan(ret[k]).any() or torch.isinf(ret[k]).any()):
-            print(f"! [Numerical Error] {k} contains nan or inf.")
 
     return ret
 
@@ -331,9 +317,9 @@ def create_nerf(args):
     render_kwargs_train = {
         'network_query_fn': network_query_fn,
         'N_importance': args.N_importance,
-        'network_fine': model_fine,
+        'network_fine': model_fine.cuda(),
         'N_samples': args.N_samples,
-        'network_fn': model,
+        'network_fn': model.cuda(),
         'use_viewdirs': args.use_viewdirs,
         'raw_noise_std': args.raw_noise_std,
     }
@@ -345,18 +331,24 @@ def create_nerf(args):
 
 
 def config_parser():
-    import configargparse
-    parser = configargparse.ArgumentParser()
-    parser.add_argument('--config', is_config_file=True,
-                        help='config file path')
-    parser.add_argument("--expname", type=str,
+    # import configargparse
+    # parser = configargparse.ArgumentParser()
+    # parser.add_argument('--config', is_config_file=True,
+    #                     help='config file path')
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--expname", type=str, default='area3',
                         help='experiment name')
-    parser.add_argument("--basedir", type=str, default='./logs/',
+    parser.add_argument("--basedir", type=str, default='./logs',
                         help='where to store ckpts and logs')
-    parser.add_argument("--datadir", type=str, default='./data/llff/fern',
-                        help='input data directory')
+    parser.add_argument("--rgb_path", type=str, default='none',
+                        help='input rgb path')
+    parser.add_argument("--depth_path", type=str, default='none',
+                        help='input depth path')
 
     # training options
+    parser.add_argument("--iters", type=int, default=25000,
+                        help='number of training iterations')
     parser.add_argument("--netdepth", type=int, default=8,
                         help='layers in network')
     parser.add_argument("--netwidth", type=int, default=256,
@@ -365,11 +357,11 @@ def config_parser():
                         help='layers in fine network')
     parser.add_argument("--netwidth_fine", type=int, default=256,
                         help='channels per layer in fine network')
-    parser.add_argument("--N_rand", type=int, default=32 * 32 * 4,
+    parser.add_argument("--N_rand", type=int, default=1400,
                         help='batch size (number of random rays per gradient step)')
-    parser.add_argument("--lrate", type=float, default=5e-4,
+    parser.add_argument("--lrate", type=float, default=5e-3,
                         help='learning rate')
-    parser.add_argument("--lrate_decay", type=int, default=250,
+    parser.add_argument("--lrate_decay", type=int, default=20,
                         help='exponential learning rate decay (in 1000 steps)')
     parser.add_argument("--chunk", type=int, default=1024 * 32,
                         help='number of rays processed in parallel, decrease if running out of memory')
@@ -383,7 +375,7 @@ def config_parser():
     # rendering options
     parser.add_argument("--N_samples", type=int, default=64,
                         help='number of coarse samples per ray')
-    parser.add_argument("--N_importance", type=int, default=0,
+    parser.add_argument("--N_importance", type=int, default=128,
                         help='number of additional fine samples per ray')
     parser.add_argument("--perturb", type=float, default=1.,
                         help='set to 0. for no jitter, 1. for jitter')
@@ -395,7 +387,7 @@ def config_parser():
                         help='log2 of max freq for positional encoding (3D location)')
     parser.add_argument("--multires_views", type=int, default=4,
                         help='log2 of max freq for positional encoding (2D direction)')
-    parser.add_argument("--raw_noise_std", type=float, default=0.,
+    parser.add_argument("--raw_noise_std", type=float, default=1e0,
                         help='std dev of noise added to regularize sigma_a output, 1e0 recommended')
 
     parser.add_argument("--render_only", action='store_true',
@@ -418,27 +410,25 @@ def config_parser():
                         help='will load 1/N images from test/val sets, useful for large datasets like deepvoxels')
 
     ## st3d flags
-    parser.add_argument("--use_depth", action='store_true',
+    parser.add_argument("--use_depth", type=bool, default=True,
                         help='use depth to update')
-    parser.add_argument("--use_dist", action='store_true',
+    parser.add_argument("--use_dist", type=bool, default=True,
                         help='use distribution loss to update')
     parser.add_argument("--use_indoor", action='store_true',
                         help='penalty passing through rays to update')
-    parser.add_argument("--use_gradient", action='store_true',
+    parser.add_argument("--use_gradient", type=bool, default=False,
                         help='use gradient to update')
-    parser.add_argument("--stage", type=int, default=0,
-                        help='use iterative training by defining stage, if 0: don\'t use')
 
     # logging/saving options
     parser.add_argument("--i_print", type=int, default=100,
                         help='frequency of console printout and metric loggin')
     parser.add_argument("--i_img", type=int, default=500,
                         help='frequency of tensorboard image logging')
-    parser.add_argument("--i_weights", type=int, default=10000,
+    parser.add_argument("--i_weights", type=int, default=25000,
                         help='frequency of weight ckpt saving')
-    parser.add_argument("--i_testset", type=int, default=50000,
+    parser.add_argument("--i_testset", type=int, default=25000,
                         help='frequency of testset saving')
-    parser.add_argument("--i_video", type=int, default=50000,
+    parser.add_argument("--i_video", type=int, default=25000,
                         help='frequency of render_poses video saving')
 
     return parser
@@ -448,19 +438,17 @@ def train():
     parser = config_parser()
     args = parser.parse_args()
 
+    params = backend.load_parameters()
+    args.__dict__.update(params)
+
     # Load data
     if args.dataset_type == 'st3d':
-        rays_o, rays_d, rays_g, rays_rgb, rays_depth, hw = load_st3d_data(args.datadir, args.stage)
+        rays_o, rays_d, rays_g, rays_rgb, rays_depth, hw, near, far = load_st3d_data(args.rgb_path, args.depth_path)
         rays_o, rays_o_test = rays_o
         rays_d, rays_d_test = rays_d
         rays_rgb, rays_rgb_test = rays_rgb
         rays_depth, rays_depth_test = rays_depth
-
-        print('DEFINING BOUNDS')
-        near, far = 0.0, 2.0
-
         print('NEAR FAR', near, far)
-
     else:
         print('Unknown dataset type', args.dataset_type, 'exiting')
         return
@@ -476,16 +464,16 @@ def train():
         for arg in sorted(vars(args)):
             attr = getattr(args, arg)
             file.write('{} = {}\n'.format(arg, attr))
-    if args.config is not None:
-        f = os.path.join(basedir, expname, 'config.txt')
-        with open(f, 'w') as file:
-            file.write(open(args.config, 'r').read())
+    # if args.config is not None:
+    #     f = os.path.join(basedir, expname, 'config.txt')
+    #     with open(f, 'w') as file:
+    #         file.write(open(args.config, 'r').read())
 
     # Create nerf model
     render_kwargs_train, render_kwargs_test, start, grad_vars, optimizer = create_nerf(args)
     global_step = start
     scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=(0.1 ** (1 / (args.lrate_decay * 1000))))
-    # scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=args.lrate, total_steps=args.i_testset + 5)
+    # scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=args.lrate, total_steps=args.iters + 5)
 
     bds_dict = {
         'near': near,
@@ -498,23 +486,20 @@ def train():
     if args.render_only:
         print('RENDER ONLY')
         with torch.no_grad():
-            if args.stage > 0:
-                testsavedir = os.path.join(basedir, expname, 'renderonly_stage_{}_{:06d}'.format(args.stage, start))
-            else:
-                testsavedir = os.path.join(basedir, expname,
-                                           'renderonly_train_{}_{:06d}'.format('test' if args.render_test else 'path',
-                                                                               start))
+            testsavedir = os.path.join(basedir, expname,
+                                       'renderonly_train_{}_{:06d}'.format('test' if args.render_test else 'path',
+                                                                           start))
 
             os.makedirs(testsavedir, exist_ok=True)
             rays_o_test = torch.Tensor(rays_o_test).to(device)
             rays_d_test = torch.Tensor(rays_d_test).to(device)
 
-            rgbs, depth = render_path([rays_o_test, rays_d_test], hw, render_kwargs_test, savedir=testsavedir,
+            rgbs, _ = render_path([rays_o_test, rays_d_test], hw, render_kwargs_test, savedir=testsavedir,
                                       render_factor=args.render_factor)
             print('Done rendering', testsavedir)
 
             # calculate MSE and PSNR for last image(gt pose)
-            gt_loss = img2mse(torch.tensor(rgbs[-1]), torch.tensor(rays_rgb_test[-1]))
+            gt_loss = img2mse(torch.tensor(rgbs[-1]).cuda(), torch.tensor(rays_rgb_test[-1]).cuda())
             gt_psnr = mse2psnr(gt_loss)
             print('ground truth loss: {}, psnr: {}'.format(gt_loss, gt_psnr))
             with open(os.path.join(testsavedir, 'statistics.txt'), 'w') as f:
@@ -549,13 +534,10 @@ def train():
     # Prepare raybatch tensor if batching random rays
     N_rand = args.N_rand
     i_batch = 0
-    # N_iters = 200000 + 1
-    N_iters = 30000 + 1
+    N_iters = args.iters + 1
     start = start + 1
     print('Begin, iter: %d' % start)
-    for i in trange(start, N_iters):
-        time0 = time.time()
-
+    for i in range(start, N_iters):
         batch_o = rays_o[i_batch:i_batch + N_rand]
         batch_d = rays_d[i_batch:i_batch + N_rand]
 
@@ -576,51 +558,45 @@ def train():
 
             i_batch = 0
 
+        batch_o, batch_d, target_rgb, target_depth = batch_o.cuda(), batch_d.cuda(), target_rgb.cuda(), target_depth.cuda()
+        if args.use_gradient:
+            target_g = target_g.cuda()
         #####  Core optimization loop  #####
 
-        rgb, dep, grad, weights, z_vals, extras = render(H, W, rays=[batch_o, batch_d], pts_noise=0*(1-i/N_iters), **render_kwargs_train)
+        rgb, dep, grad, weights, z_vals, extras = render(H, W, rays=[batch_o, batch_d], pts_noise=0,
+                                                         **render_kwargs_train)
 
         optimizer.zero_grad()
         # import pdb; pdb.set_trace()
         img_loss = img2mse(rgb, target_rgb)
 
-        if i % 100 == 1:
-            print("weights common example: ", weights[0][:20].detach())
-
         # depth_loss
         if args.use_depth:
             depth_loss = img2mse(dep, target_depth)
         else:
-            depth_loss = torch.tensor(0.0)
+            depth_loss = 0
 
         # distribution loss
         if args.use_dist:
-            dist_loss = weights[z_vals < target_depth[:, None]*0.99].mean()
-            if i % 100 == 1:
-                print("weights example: ", weights[0][-30:].detach())
+            dist_loss = weights[z_vals < target_depth[:, None] * 0.99].mean()
         else:
-            dist_loss = torch.tensor(0.0)
+            dist_loss = 0
 
         if args.use_indoor:
-            indoor_loss = -torch.log(1-weights.sum(dim=-1) + 1e-6).mean() * 0.01
+            indoor_loss = -torch.log(1 - weights.sum(dim=-1) + 1e-6).mean() * 0.01
         else:
-            indoor_loss = torch.tensor(0.0)
+            indoor_loss = 0
 
         if args.use_gradient:
             grad_loss = img2mse(grad, target_g)
         else:
-            grad_loss = torch.tensor(0.0)
+            grad_loss = 0
 
         loss = img_loss + depth_loss + grad_loss + dist_loss + indoor_loss
-        if i % 100 == 1:
-            print("img_loss:", img_loss.detach(), "depth_loss: ", depth_loss.detach(), "dist_loss ", dist_loss.detach(),
-                  "indoor_loss: ", indoor_loss.detach())
         psnr = mse2psnr(img_loss)
 
         # loss for coarse network
         if 'rgb0' in extras:
-            if i % 100 == 1:
-                print("has rgb0!")
             img_loss0 = img2mse(extras['rgb0'], target_rgb)
             loss = loss + img_loss0
             info = "img_loss0:" + str(img_loss0.detach())
@@ -630,7 +606,7 @@ def train():
                 loss = loss + depth_loss0
                 info += "depth_loss0: " + str(depth_loss0.detach())
             if args.use_dist:
-                dist_loss0 = extras['weights0'][extras['z_vals0'] < target_depth[:, None]*0.99].mean()
+                dist_loss0 = extras['weights0'][extras['z_vals0'] < target_depth[:, None] * 0.99].mean()
                 loss = loss + dist_loss0
                 info += "dist_loss0: " + str(dist_loss0.detach())
             if args.use_indoor:
@@ -640,24 +616,13 @@ def train():
             if args.use_gradient:
                 grad_loss0 = img2mse(extras['grad0'], target_g)
                 loss = loss + grad_loss0
-            psnr0 = mse2psnr(img_loss0)
-            if i % 100 == 1:
-                print(info)
 
         loss.backward()
         optimizer.step()
 
         # NOTE: IMPORTANT!
-        ###   update learning rate   ###
-        # decay_rate = 0.1
-        # decay_steps = args.lrate_decay * 1000
-        # new_lrate = args.lrate * (decay_rate ** (global_step / decay_steps))
-        # for param_group in optimizer.param_groups:
-        #     param_group['lr'] = new_lrate
         scheduler.step()
         ################################
-
-        #####           end            #####
 
         # Rest is logging
         if i % args.i_weights == 0:
@@ -668,31 +633,25 @@ def train():
                 'network_fine_state_dict': render_kwargs_train['network_fine'].state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
             }, path)
-            print('Saved checkpoints at', path)
+            backend.save_artifact(path, "checkpoint")
 
         if i % args.i_testset == 0 and i > 0:
-            if args.stage > 0:
-                testsavedir = os.path.join(basedir, expname, 'stage{}_test_{:06d}'.format(args.stage, i))
-            else:
-                testsavedir = os.path.join(basedir, expname, 'testset_{:06d}'.format(i))
+            testsavedir = os.path.join(basedir, expname, 'testset_{:06d}'.format(i))
             os.makedirs(testsavedir, exist_ok=True)
 
             with torch.no_grad():
-                rgbs, deps = render_path([rays_o_test, rays_d_test], hw, render_kwargs_test, savedir=testsavedir,
-                                         render_factor=args.render_factor)
+                rgbs, _ = render_path([rays_o_test, rays_d_test], hw, render_kwargs_test, savedir=testsavedir,
+                                         render_factor=8)
             print('Done rendering', testsavedir)
 
             # calculate MSE and PSNR for last image(gt pose)
-            gt_loss = img2mse(torch.tensor(rgbs[-1]), torch.tensor(rays_rgb_test[-1]))
-            gt_psnr = mse2psnr(gt_loss)
-            print('ground truth loss: {}, psnr: {}'.format(gt_loss, gt_psnr))
-            with open(os.path.join(testsavedir, 'statistics.txt'), 'w') as f:
-                f.write('loss: {}, psnr: {}'.format(gt_loss, gt_psnr))
+            # gt_loss = img2mse(torch.tensor(rgbs[-1]), torch.tensor(rays_rgb_test[-1]))
+            # gt_psnr = mse2psnr(gt_loss)
+            # print('ground truth loss: {}, psnr: {}'.format(gt_loss, gt_psnr))
 
             rgbs = np.concatenate([rgbs[:-1], rgbs[:-1][::-1]])
             imageio.mimwrite(os.path.join(testsavedir, 'video2.gif'), to8b(rgbs), fps=10)
-
-            print('Saved test set')
+            backend.save_artifact(os.path.join(testsavedir, 'video2.gif'), "video")
 
         if i % args.i_print == 0:
             tqdm.write(f"[TRAIN] Iter: {i} Loss: {loss.item()}  PSNR: {psnr.item()}")
@@ -701,6 +660,5 @@ def train():
 
 
 if __name__ == '__main__':
-    torch.set_default_tensor_type('torch.cuda.FloatTensor')
-
+    torch.set_default_tensor_type('torch.FloatTensor')
     train()

@@ -3,7 +3,6 @@ torchvision>=0.2.1
 imageio
 imageio-ffmpeg
 matplotlib
-configargparse
 tensorboard>=1.15.0
 tqdm
 opencv-python

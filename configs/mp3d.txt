@@ -21,7 +21,6 @@ multires = 10
 multires_views = 4
 
 stride = -1
-stage = 7
 #testsave_dir = /home/jessie/nerf-pytorch/logs/mp3d_test_1006/renderonly_train_path_099999
 
 use_depth = False

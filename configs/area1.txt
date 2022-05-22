@@ -14,6 +14,5 @@ raw_noise_std = 1e0
 multires = 10
 multires_views = 4
 
-stage = 0
 use_gradient = True
 use_depth = False

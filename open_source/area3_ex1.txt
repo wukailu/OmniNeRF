@@ -31,7 +31,6 @@ raw_noise_std = 1.0
 render_factor = 0
 render_only = False
 render_test = False
-stage = 0
 testskip = 8
 use_depth = False
 use_gradient = True

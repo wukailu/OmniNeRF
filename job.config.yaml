@@ -1,0 +1,23 @@
+# Project config #
+project_name: 'DefaultProjectName'
+log_level: INFO
+
+# Worker config #
+# Additional definition for the worker can be found here: https://docker-py.readthedocs.io/en/stable/containers.html
+worker:
+  image: wuvin:pylight138_torch181_kube
+
+  volumes:
+    /dev/shm:
+      bind: /dev/shm
+      mode: rw
+
+    /home/kailu/.cache/torch:
+      bind: /root/.cache/torch
+      mode: rw
+
+    /data:
+      bind: /data
+      mode: rw
+
+  network_mode: host
