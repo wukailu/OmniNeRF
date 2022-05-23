@@ -1,6 +1,5 @@
 import numpy as np
 from PIL import Image
-import os
 import math
 import cv2
 
@@ -34,7 +33,7 @@ def preprocess(rgb_path, depth_path):
                 if i != 0 and d[i - 1, 0] != 0:
                     d[i, 0] = d[i - 1, 0]
                 else:
-                    d[i, 0] = d[min(i + 1, H), 0]
+                    d[i, 0] = d[min(i + 1, H - 1), 0]
                 continue
 
             gaps = [[s, e] for s, e in zip(y_idx, y_idx[1:]) if s + 1 < e]

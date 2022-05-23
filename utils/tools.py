@@ -1,3 +1,5 @@
+import random
+
 import numpy
 import numpy as np
 import os
@@ -13,17 +15,27 @@ else:
 hparams_cache = {}
 
 
-def batch_result_extract(path="../results", project_name="default", artifact_name='metric.pkl'):
+def seed_name(train_param, artifact_name):
+    if 'seed' in train_param:
+        return artifact_name.split('.')[0] + f"_{train_param['seed']}." + artifact_name.split('.')[-1]
+    else:
+        return artifact_name.split('.')[0] + f"_RAND{random.randint(0, 99999)}." + artifact_name.split('.')[-1]
+
+
+def batch_result_extract(path="../results", project_name="default", artifact_name='metric.pkl', name_gen=seed_name):
     os.makedirs(path, exist_ok=True)
     targets = get_targets(dict_filter({'project_name': project_name}))
     for folder in targets:
         import shutil
         src = os.path.join(folder, "user_artifacts/", artifact_name)
         hp = get_hparams(folder)
-        if os.path.exists(src) and 'seed' in hp:
-            dst = os.path.join(path, artifact_name.split('.')[0] + f"_{hp['seed']}." + artifact_name.split('.')[-1])
-            print(f"copy from {src} to {dst}")
-            shutil.copy(src, dst)
+        if os.path.exists(src):
+            try:
+                dst = os.path.join(path, name_gen(hp, artifact_name))
+                print(f"copy from {src} to {dst}")
+                shutil.copy(src, dst)
+            except:
+                print("Warning: Copy failed!")
 
 
 def gather_tensorboard_to(path="./tb", project_name="default", recent=0):
