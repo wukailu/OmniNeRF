@@ -112,7 +112,7 @@ def render_path(rays, hw, render_kwargs, savedir=None, render_factor=0):
         # Render downsampled for speed
         H = H // render_factor
         W = W // render_factor
-        assert rays_o.shape[0] % (H*W) == 0
+        assert rays_o.shape[0] % (H * W) == 0
 
     rgbs, deps = [], []
     t = time.time()
@@ -184,7 +184,9 @@ def render_rays(ray_batch,
     upper = torch.cat([mids, z_vals[..., -1:]], -1)
     lower = torch.cat([z_vals[..., :1], mids], -1)
     # stratified samples in those intervals
-    t_rand = torch.rand_like(z_vals)
+    # TODO: modify this
+    # t_rand = torch.rand_like(z_vals)
+    t_rand = torch.ones_like(z_vals) * 0.5
     z_vals = lower + (upper - lower) * t_rand
 
     pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :, None]  # [N_rays, N_samples, 3]
@@ -209,7 +211,7 @@ def render_rays(ray_batch,
                                                             None]  # [N_rays, N_samples + N_importance, 3]
 
         run_fn = network_fn if network_fine is None else network_fine
-        raw = network_query_fn(pts + torch.randn_like(pts) * pts_noise, viewdirs, run_fn)
+        raw = network_query_fn(pts, viewdirs, run_fn)
         # raw = network_query_fn(pts, viewdirs, run_fn)
 
         rgb_map, depth_map, grad_map, weights, alpha = raw2outputs(raw, z_vals, rays_d, raw_noise_std)
@@ -495,7 +497,7 @@ def train():
             rays_d_test = torch.Tensor(rays_d_test).to(device)
 
             rgbs, _ = render_path([rays_o_test, rays_d_test], hw, render_kwargs_test, savedir=testsavedir,
-                                      render_factor=args.render_factor)
+                                  render_factor=args.render_factor)
             print('Done rendering', testsavedir)
 
             # calculate MSE and PSNR for last image(gt pose)
@@ -641,7 +643,7 @@ def train():
 
             with torch.no_grad():
                 rgbs, _ = render_path([rays_o_test, rays_d_test], hw, render_kwargs_test, savedir=testsavedir,
-                                         render_factor=8)
+                                      render_factor=8)
             print('Done rendering', testsavedir)
 
             # calculate MSE and PSNR for last image(gt pose)

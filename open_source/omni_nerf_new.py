@@ -201,7 +201,7 @@ def run_network(inputs, viewdirs, fn, embed_fn, embeddirs_fn, netchunk=1024 * 64
     return outputs
 
 
-def load_nerf(args, device):
+def load_nerf(args, device, ckpt_path=None):
     """Instantiate NeRF's MLP model.
     """
     embed_fn, input_ch = get_embedder(args.multires, args.i_embed)
@@ -231,7 +231,6 @@ def load_nerf(args, device):
     # TODO: 填一下 ckpt_path
 
     assert NotImplementedError()
-    ckpt_path = ""
     print('Found ckpts', ckpt_path)
     print('Reloading from', ckpt_path)
     ckpt = torch.load(ckpt_path)
