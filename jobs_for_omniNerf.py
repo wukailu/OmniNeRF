@@ -12,7 +12,7 @@ templates = {
 
 
 def StandFordArea():
-    area_id = '1'
+    area_id = '2'
     files = os.listdir(f'/data/Standford/area_{area_id}/pano/rgb/')
     file = random_params(files)
     params = templates['standford']
