@@ -12,11 +12,11 @@ templates = {
 
 
 def StandFordArea():
-    area_id = '2'
+    area_id = '4'
     files = os.listdir(f'/data/Standford/area_{area_id}/pano/rgb/')
     file = random_params(files)
     params = templates['standford']
-    iters = 50000
+    iters = 30000
     params.update({
         'project_name': f"Area{area_id}",
         'iters': iters,
@@ -35,4 +35,4 @@ def params_for_Nerf():
 
 
 if __name__ == "__main__":
-    submit_jobs(params_for_Nerf, 'run_nerf.py', number_jobs=300, job_directory='.')
+    submit_jobs(params_for_Nerf, 'run_nerf.py', number_jobs=300, job_directory='.', ignore_exist=True)
